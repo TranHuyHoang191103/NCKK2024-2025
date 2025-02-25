@@ -1,6 +1,5 @@
 import networkx as nx
 import heapq
-import matplotlib.pyplot as plt
 
 def heuristic(node, goal):
     heuristic_values = {
