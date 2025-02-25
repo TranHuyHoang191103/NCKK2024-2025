@@ -170,4 +170,8 @@ class DStarLite:
         self.update_vertex(to_node)
         
         # Recompute shortest path
+<<<<<<< HEAD
         return self.replan()
+=======
+        return self.replan()
+>>>>>>> 6816a064c91d931900e326faf7983f1277fd2c0f
