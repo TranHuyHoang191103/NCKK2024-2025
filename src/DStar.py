@@ -1,115 +1,173 @@
 import heapq
+from collections import defaultdict
 
-class Node:
-    def __init__(self, x, y):
-        self.x = x
-        self.y = y
-        self.g = float('inf')
-        self.rhs = float('inf')
-        self.key = (float('inf'), float('inf'))
+def d_star(graph, start_node, goal_node, obstacle_updates=None):
+    """
+    Run D* Lite algorithm on a NetworkX graph.
     
-    def __lt__(self, other):
-        return self.key < other.key
+    Parameters:
+    - graph: NetworkX DiGraph object with weighted edges
+    - start_node: Starting node
+    - goal_node: Goal node
+    - obstacle_updates: List of tuples (from_node, to_node, new_cost) representing discovered obstacles
+    
+    Returns:
+    - Tuple containing (shortest_path, total_cost)
+    """
+    # Initialize the D* Lite algorithm
+    dstar = DStarLite()
+    
+    # Convert NetworkX graph to our internal representation
+    for u, v, data in graph.edges(data=True):
+        dstar.add_edge(u, v, data['weight'])
+    
+    # Initialize and plan
+    dstar.initialize(start_node, goal_node)
+    path = dstar.replan()
+    
+    # Process obstacle updates if provided
+    if obstacle_updates:
+        for from_node, to_node, new_cost in obstacle_updates:
+            dstar.current = from_node  # Simulate being at the node where the obstacle is discovered
+            path = dstar.update_edge_cost(from_node, to_node, new_cost)
+    
+    # Calculate total cost
+    total_cost = 0
+    if path:
+        for i in range(len(path) - 1):
+            total_cost += dstar.graph[path[i]][path[i+1]]
+    
+    return path, total_cost
 
 class DStarLite:
-    def __init__(self, start, goal, grid):
-        self.grid_size = (len(grid), len(grid[0]))
-        self.grid = grid
-        self.nodes = [[Node(x, y) for y in range(self.grid_size[1])] for x in range(self.grid_size[0])]
+    def __init__(self):
+        self.graph = defaultdict(dict)
+        self.start = None
+        self.goal = None
+        self.km = 0  # Accumulated cost offset
+        self.U = []  # Priority queue
+        self.rhs = defaultdict(lambda: float('inf'))
+        self.g = defaultdict(lambda: float('inf'))
+        self.current = None  # Current position of the agent
         
-        self.start = self.nodes[start[0]][start[1]]
-        self.goal = self.nodes[goal[0]][goal[1]]
-        self.current = self.start
-        
-        self.queue = []
-        self.km = 0
-        
-        # Initialize goal
-        self.goal.rhs = 0
-        heapq.heappush(self.queue, (self.calculate_key(self.goal), self.goal))
+    def add_edge(self, from_node, to_node, cost):
+        """Add an edge to the graph."""
+        self.graph[from_node][to_node] = cost
     
-    def calculate_key(self, node):
-        k1 = min(node.g, node.rhs) + self.heuristic(self.current, node) + self.km
-        k2 = min(node.g, node.rhs)
-        return (k1, k2)
+    def h(self, s, s_goal):
+        """Heuristic function (simple straight-line distance approximation)."""
+        # In a real-world scenario, you might use Euclidean distance
+        # Since we're using a graph with no coordinates, we'll use a simple heuristic
+        return 0  # Consistent heuristic, turns this into Dijkstra's algorithm
     
-    def heuristic(self, a, b):
-        return abs(a.x - b.x) + abs(a.y - b.y)
+    def calculate_key(self, s):
+        """Calculate the key for a vertex."""
+        if self.g[s] > self.rhs[s]:
+            return (self.rhs[s] + self.h(s, self.goal) + self.km, self.rhs[s])
+        else:
+            return (self.g[s] + self.h(s, self.goal) + self.km, self.g[s])
     
-    def get_neighbors(self, node):
-        neighbors = []
-        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        for dx, dy in directions:
-            x, y = node.x + dx, node.y + dy
-            if 0 <= x < self.grid_size[0] and 0 <= y < self.grid_size[1]:
-                if self.grid[x][y] == 0:  # Check for obstacles
-                    neighbors.append(self.nodes[x][y])
-        return neighbors
-    
-    def update_node(self, node):
-        if node != self.goal:
-            node.rhs = float('inf')
-            neighbors = self.get_neighbors(node)
-            for neighbor in neighbors:
-                node.rhs = min(node.rhs, neighbor.g + 1)  # Assume movement cost = 1
+    def update_vertex(self, u):
+        """Update vertex in the priority queue."""
+        if u != self.goal:
+            # Calculate minimum rhs value from successors
+            self.rhs[u] = float('inf')
+            for successor, cost in self.graph[u].items():
+                self.rhs[u] = min(self.rhs[u], cost + self.g[successor])
         
-        # Remove old queue entries
-        temp_queue = []
-        while self.queue:
-            key, n = heapq.heappop(self.queue)
-            if n.x == node.x and n.y == node.y:
-                continue
-            temp_queue.append((key, n))
-        for item in temp_queue:
-            heapq.heappush(self.queue, item)
+        # Remove u from the priority queue if it exists
+        for i, (_, vertex) in enumerate(self.U):
+            if vertex == u:
+                self.U.pop(i)
+                heapq.heapify(self.U)
+                break
         
-        if node.g != node.rhs:
-            heapq.heappush(self.queue, (self.calculate_key(node), node))
+        # If g and rhs are inconsistent, add u to the priority queue
+        if self.g[u] != self.rhs[u]:
+            heapq.heappush(self.U, (self.calculate_key(u), u))
     
     def compute_shortest_path(self):
-        while self.queue and (
-            self.queue[0][0] < self.calculate_key(self.current) or
-            self.current.rhs != self.current.g
-        ):
-            _, node = heapq.heappop(self.queue)
-            if node.g > node.rhs:
-                node.g = node.rhs
-            else:
-                node.g = float('inf')
-                self.update_node(node)
+        """Compute the shortest path from start to goal."""
+        while (len(self.U) > 0 and 
+              (self.U[0][0] < self.calculate_key(self.start) or 
+               self.rhs[self.start] != self.g[self.start])):
+            k_old, u = heapq.heappop(self.U)
+            k_new = self.calculate_key(u)
             
-            neighbors = self.get_neighbors(node)
-            for neighbor in neighbors:
-                self.update_node(neighbor)
+            if k_old < k_new:
+                heapq.heappush(self.U, (k_new, u))
+            elif self.g[u] > self.rhs[u]:
+                self.g[u] = self.rhs[u]
+                for predecessor in self.get_predecessors(u):
+                    self.update_vertex(predecessor)
+            else:
+                self.g[u] = float('inf')
+                self.update_vertex(u)
+                for predecessor in self.get_predecessors(u):
+                    self.update_vertex(predecessor)
     
-    def replan(self, new_obstacles):
-        self.km += self.heuristic(self.current, self.start)
-        for (x, y) in new_obstacles:
-            self.grid[x][y] = 1  # Mark as blocked
-            self.update_node(self.nodes[x][y])
+    def get_predecessors(self, node):
+        """Get all predecessors of a node."""
+        predecessors = []
+        for potential_pred in self.graph:
+            if node in self.graph[potential_pred]:
+                predecessors.append(potential_pred)
+        return predecessors
+    
+    def initialize(self, start, goal):
+        """Initialize the D* Lite algorithm."""
+        self.start = start
+        self.goal = goal
+        self.current = start  # Initialize current position to start
+        self.km = 0
+        self.U = []
+        self.g = defaultdict(lambda: float('inf'))
+        self.rhs = defaultdict(lambda: float('inf'))
+        self.rhs[goal] = 0
+        heapq.heappush(self.U, (self.calculate_key(goal), goal))
+    
+    def replan(self):
+        """Replan the path if needed."""
         self.compute_shortest_path()
+        return self.extract_path()
     
-    def get_path(self):
-        path = []
-        current = self.current
+    def extract_path(self):
+        """Extract the path from start to goal."""
+        if self.g[self.start] == float('inf'):
+            return None  # No path exists
+        
+        path = [self.start]
+        current = self.start
+        
         while current != self.goal:
-            path.append((current.x, current.y))
-            neighbors = self.get_neighbors(current)
-            current = min(neighbors, key=lambda n: n.g)
-        path.append((self.goal.x, self.goal.y))
+            min_cost = float('inf')
+            next_node = None
+            
+            for successor, cost in self.graph[current].items():
+                if cost + self.g[successor] < min_cost:
+                    min_cost = cost + self.g[successor]
+                    next_node = successor
+            
+            if next_node is None:
+                return None  # No path exists
+            
+            path.append(next_node)
+            current = next_node
+        
         return path
-
-# Example usage
-grid = [
-    [0, 0, 0, 0],
-    [0, 1, 1, 0],
-    [0, 0, 0, 0]
-]
-
-dstar = DStarLite((0, 0), (2, 3), grid)
-dstar.compute_shortest_path()
-print("Initial path:", dstar.get_path())  # Output: [(0, 0), (0, 1), (0, 2), (1, 3), (2, 3)]
-
-# Add obstacle at (1, 0)
-dstar.replan([(1, 0)])
-print("Updated path:", dstar.get_path())  # Output: [(0, 0), (0, 1), (0, 2), (0, 3), (1, 3), (2, 3)]
+    
+    def update_edge_cost(self, from_node, to_node, new_cost):
+        """Update the cost of an edge."""
+        self.km += self.h(self.start, self.goal)
+        self.start = self.current  # Update start to current position
+        
+        # Update the edge cost
+        old_cost = self.graph[from_node][to_node]
+        self.graph[from_node][to_node] = new_cost
+        
+        # Update affected vertices
+        self.update_vertex(from_node)
+        self.update_vertex(to_node)
+        
+        # Recompute shortest path
+        return self.replan()
